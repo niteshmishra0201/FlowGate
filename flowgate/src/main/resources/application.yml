@@ -4,6 +4,10 @@ server:
 spring:
   application:
     name: flowgate
+  data:
+    redis:
+      host: redis     # container/service name — same DNS trick from Phase 0's bug fix
+      port: 6379
 
 flowgate:
   routes:

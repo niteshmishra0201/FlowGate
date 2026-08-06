@@ -8,8 +8,23 @@ services:
       - "8080:8080"
     depends_on:
       - dummy-backend
+      - order-service
+      - redis
     environment:
       - SPRING_PROFILES_ACTIVE=docker
+
+  flowgate-2:
+    build: .
+    container_name: flowgate-2
+    ports:
+      - "8081:8080"
+    depends_on:
+      - dummy-backend
+      - order-service
+      - redis
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+
 
   dummy-backend:
     image: kennethreitz/httpbin
@@ -24,3 +39,9 @@ services:
     command: [ "-text=hello from order-service" ]
     ports:
       - "9001:5678"
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
