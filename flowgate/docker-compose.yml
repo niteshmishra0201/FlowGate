@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  flowgate:
+    build: .
+    container_name: flowgate
+    ports:
+      - "8080:8080"
+    depends_on:
+      - dummy-backend
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+
+  dummy-backend:
+    image: kennethreitz/httpbin
+    container_name: dummy-backend
+    ports:
+      - "9000:80"
