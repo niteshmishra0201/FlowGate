@@ -10,6 +10,8 @@ flowgate:
     - id: order-service
       path-pattern: "/orders/**"
       target-uri: "http://order-service:5678"
+      health-check-path: "/"
     - id: dummy-backend
       path-pattern: "/**"
       target-uri: "http://dummy-backend:80"
+      health-check-path: "/status/200"
