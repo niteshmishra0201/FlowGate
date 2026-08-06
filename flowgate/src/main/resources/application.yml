@@ -4,3 +4,12 @@ server:
 spring:
   application:
     name: flowgate
+
+flowgate:
+  routes:
+    - id: order-service
+      path-pattern: "/orders/**"
+      target-uri: "http://order-service:5678"
+    - id: dummy-backend
+      path-pattern: "/**"
+      target-uri: "http://dummy-backend:80"
