@@ -1,15 +1,17 @@
 package com.flowgate.routing;
 
 import com.flowgate.ratelimit.RateLimiter;
+import com.flowgate.resilience.RouteCircuitBreakers;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerRequest;
-import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Mono;
+import io.github.resilience4j.reactor.retry.RetryOperator;
+
 
 import static org.springframework.web.reactive.function.server.RequestPredicates.all;
 
@@ -23,7 +25,8 @@ public class GatewayRoutes {
 
     @Bean
     public RouterFunction<ServerResponse> proxyRoute(
-            WebClient webClient, RouteMatcher routeMatcher, RateLimiter rateLimiter) {
+            WebClient webClient, RouteMatcher routeMatcher,
+            RateLimiter rateLimiter, RouteCircuitBreakers circuitBreakers) {
 
         return RouterFunctions.route(all(), request ->
                 rateLimiter.checkLimit(clientId(request))
@@ -35,7 +38,7 @@ public class GatewayRoutes {
                                         .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
                             }
                             return routeMatcher.match(request.path())
-                                    .map(route -> forward(webClient, request, route))
+                                    .map(route -> forward(webClient, request, route, circuitBreakers))
                                     .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
                                             .bodyValue("No route matched: " + request.path()));
                         })
@@ -43,15 +46,18 @@ public class GatewayRoutes {
     }
 
     private String clientId(ServerRequest request) {
-        // Temporary identity signal until Phase 5 adds real authentication.
         return request.remoteAddress()
                 .map(addr -> addr.getAddress().getHostAddress())
                 .orElse("unknown");
     }
 
-    private Mono<ServerResponse> forward(WebClient webClient, ServerRequest request, RouteDefinition route) {
+    private Mono<ServerResponse> forward(
+            WebClient webClient, ServerRequest request, RouteDefinition route,
+            RouteCircuitBreakers circuitBreakers) {
+
         String targetUrl = route.targetUri() + request.path();
-        return webClient
+
+        Mono<ServerResponse> call = webClient
                 .method(request.method())
                 .uri(targetUrl)
                 .headers(headers -> headers.addAll(request.headers().asHttpHeaders()))
@@ -61,6 +67,14 @@ public class GatewayRoutes {
                                 .status(clientResponse.statusCode())
                                 .headers(headers -> headers.addAll(clientResponse.headers().asHttpHeaders()))
                                 .body(clientResponse.bodyToMono(byte[].class), byte[].class)
+                );
+
+        return call
+                .transformDeferred(RetryOperator.of(circuitBreakers.retryForRoute(route.id())))
+                .transformDeferred(CircuitBreakerOperator.of(circuitBreakers.forRoute(route.id())))
+                .onErrorResume(CallNotPermittedException.class, ex ->
+                        ServerResponse.status(HttpStatus.SERVICE_UNAVAILABLE)
+                                .bodyValue("Service temporarily unavailable (circuit open) for route: " + route.id())
                 );
     }
 }
