@@ -1,17 +1,20 @@
 package com.flowgate.routing;
 
+import com.flowgate.loadbalance.LeastConnectionsStrategy;
+import com.flowgate.loadbalance.RoundRobinStrategy;
 import com.flowgate.ratelimit.RateLimiter;
 import com.flowgate.resilience.RouteCircuitBreakers;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
+import io.github.resilience4j.reactor.retry.RetryOperator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Mono;
-import io.github.resilience4j.reactor.retry.RetryOperator;
 
+import java.util.List;
 
 import static org.springframework.web.reactive.function.server.RequestPredicates.all;
 
@@ -26,7 +29,9 @@ public class GatewayRoutes {
     @Bean
     public RouterFunction<ServerResponse> proxyRoute(
             WebClient webClient, RouteMatcher routeMatcher,
-            RateLimiter rateLimiter, RouteCircuitBreakers circuitBreakers) {
+            RateLimiter rateLimiter, RouteCircuitBreakers circuitBreakers,
+            HealthChecker healthChecker, RoundRobinStrategy roundRobin,
+            LeastConnectionsStrategy leastConn) {
 
         return RouterFunctions.route(all(), request ->
                 routeMatcher.match(request.path())
@@ -38,7 +43,8 @@ public class GatewayRoutes {
                                                 .header("Retry-After", String.valueOf(retryAfter))
                                                 .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
                                     }
-                                    return forward(webClient, request, route, circuitBreakers);
+                                    return forward(webClient, request, route, circuitBreakers,
+                                            healthChecker, roundRobin, leastConn);
                                 }))
                         .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
                                 .bodyValue("No route matched: " + request.path()))
@@ -51,11 +57,21 @@ public class GatewayRoutes {
                 .orElse("unknown");
     }
 
+    private String selectTarget(RouteDefinition route, List<String> healthyInstances,
+                                RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn) {
+        return "least-connections".equals(route.loadBalancingStrategy())
+                ? leastConn.selectInstance(route.id(), healthyInstances)
+                : roundRobin.selectInstance(route.id(), healthyInstances); // default
+    }
+
     private Mono<ServerResponse> forward(
             WebClient webClient, ServerRequest request, RouteDefinition route,
-            RouteCircuitBreakers circuitBreakers) {
+            RouteCircuitBreakers circuitBreakers, HealthChecker healthChecker,
+            RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn) {
 
-        String targetUrl = route.targetUri() + request.path();
+        List<String> healthyInstances = healthChecker.getHealthyInstances(route);
+        String target = selectTarget(route, healthyInstances, roundRobin, leastConn);
+        String targetUrl = target + request.path();
 
         Mono<ServerResponse> call = webClient
                 .method(request.method())

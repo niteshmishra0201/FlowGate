@@ -8,7 +8,7 @@ services:
       - "8080:8080"
     depends_on:
       - dummy-backend
-      - order-service
+      - order-service-1
       - redis
     environment:
       - SPRING_PROFILES_ACTIVE=docker
@@ -20,11 +20,10 @@ services:
       - "8081:8080"
     depends_on:
       - dummy-backend
-      - order-service
+      - order-service-1
       - redis
     environment:
       - SPRING_PROFILES_ACTIVE=docker
-
 
   dummy-backend:
     image: kennethreitz/httpbin
@@ -32,13 +31,19 @@ services:
     ports:
       - "9000:80"
 
-
-  order-service:
+  order-service-1:
     image: hashicorp/http-echo
-    container_name: order-service
-    command: [ "-text=hello from order-service" ]
+    container_name: order-service-1
+    command: ["-text=hello from order-service-1"]
     ports:
       - "9001:5678"
+
+  order-service-2:
+    image: hashicorp/http-echo
+    container_name: order-service-2
+    command: ["-text=hello from order-service-2"]
+    ports:
+      - "9002:5678"
 
   redis:
     image: redis:7-alpine

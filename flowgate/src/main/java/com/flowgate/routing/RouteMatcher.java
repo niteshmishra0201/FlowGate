@@ -24,7 +24,7 @@ public class RouteMatcher {
     public Optional<RouteDefinition> match(String path) {
         return sortedRoutes.stream()
                 .filter(route -> pathMatcher.match(route.pathPattern(), path))
-                .filter(route -> healthChecker.isHealthy(route.id())) // NEW
+                .filter(route -> !healthChecker.getHealthyInstances(route).isEmpty()) // CHANGED
                 .findFirst();
     }
 }
