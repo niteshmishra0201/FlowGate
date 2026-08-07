@@ -29,19 +29,19 @@ public class GatewayRoutes {
             RateLimiter rateLimiter, RouteCircuitBreakers circuitBreakers) {
 
         return RouterFunctions.route(all(), request ->
-                rateLimiter.checkLimit(clientId(request))
-                        .flatMap(result -> {
-                            if (!result.allowed()) {
-                                long retryAfter = rateLimiter.estimateRetryAfterSeconds(result.tokensRemaining());
-                                return ServerResponse.status(HttpStatus.TOO_MANY_REQUESTS)
-                                        .header("Retry-After", String.valueOf(retryAfter))
-                                        .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
-                            }
-                            return routeMatcher.match(request.path())
-                                    .map(route -> forward(webClient, request, route, circuitBreakers))
-                                    .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
-                                            .bodyValue("No route matched: " + request.path()));
-                        })
+                routeMatcher.match(request.path())
+                        .map(route -> rateLimiter.checkLimit(clientId(request), route.id())
+                                .flatMap(result -> {
+                                    if (!result.allowed()) {
+                                        long retryAfter = rateLimiter.estimateRetryAfterSeconds(result.tokensRemaining());
+                                        return ServerResponse.status(HttpStatus.TOO_MANY_REQUESTS)
+                                                .header("Retry-After", String.valueOf(retryAfter))
+                                                .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
+                                    }
+                                    return forward(webClient, request, route, circuitBreakers);
+                                }))
+                        .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
+                                .bodyValue("No route matched: " + request.path()))
         );
     }
 
