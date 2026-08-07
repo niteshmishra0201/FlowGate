@@ -1,5 +1,7 @@
 package com.flowgate.routing;
 
+import com.flowgate.auth.AuthFilter;
+import com.flowgate.cache.ResponseCache;
 import com.flowgate.loadbalance.LeastConnectionsStrategy;
 import com.flowgate.loadbalance.RoundRobinStrategy;
 import com.flowgate.ratelimit.RateLimiter;
@@ -13,8 +15,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.server.*;
 import reactor.core.publisher.Mono;
+import org.springframework.http.HttpMethod;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.springframework.web.reactive.function.server.RequestPredicates.all;
 
@@ -28,27 +32,46 @@ public class GatewayRoutes {
 
     @Bean
     public RouterFunction<ServerResponse> proxyRoute(
-            WebClient webClient, RouteMatcher routeMatcher,
-            RateLimiter rateLimiter, RouteCircuitBreakers circuitBreakers,
-            HealthChecker healthChecker, RoundRobinStrategy roundRobin,
-            LeastConnectionsStrategy leastConn) {
+            WebClient webClient, RouteMatcher routeMatcher, RateLimiter rateLimiter,
+            RouteCircuitBreakers circuitBreakers, HealthChecker healthChecker,
+            AuthFilter authFilter, RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn, ResponseCache responseCache) {
 
-        return RouterFunctions.route(all(), request ->
-                routeMatcher.match(request.path())
-                        .map(route -> rateLimiter.checkLimit(clientId(request), route.id())
-                                .flatMap(result -> {
-                                    if (!result.allowed()) {
-                                        long retryAfter = rateLimiter.estimateRetryAfterSeconds(result.tokensRemaining());
-                                        return ServerResponse.status(HttpStatus.TOO_MANY_REQUESTS)
-                                                .header("Retry-After", String.valueOf(retryAfter))
-                                                .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
-                                    }
-                                    return forward(webClient, request, route, circuitBreakers,
-                                            healthChecker, roundRobin, leastConn);
-                                }))
-                        .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
-                                .bodyValue("No route matched: " + request.path()))
-        );
+        return RouterFunctions.route(all(), request -> {
+            String authHeader = request.headers().firstHeader("Authorization");
+            Optional<String> clientId = authFilter.validateAndExtractClientId(authHeader);
+
+            if (clientId.isEmpty()) {
+                return ServerResponse.status(HttpStatus.UNAUTHORIZED)
+                        .bodyValue("Missing or invalid authentication token.");
+            }
+
+            // Right after successful auth + before rate limiting (or after — let's check cache before spending a rate-limit token, since a cache hit costs nothing downstream anyway):
+
+            if (request.method() == HttpMethod.GET) {
+                String cacheKey = responseCache.buildKey(request.method().name(), request.path(), clientId.get());
+                ResponseCache.CachedResponse cached = responseCache.get(cacheKey);
+                if (cached != null) {
+                    return ServerResponse.status(cached.statusCode())
+                            .header("X-Cache", "HIT")   // useful for verifying behavior, see below
+                            .bodyValue(cached.body());
+                }
+            }
+
+            return routeMatcher.match(request.path())
+                    .map(route -> rateLimiter.checkLimit(clientId.get(), route.id())
+                            .flatMap(result -> {
+                                if (!result.allowed()) {
+                                    long retryAfter = rateLimiter.estimateRetryAfterSeconds(result.tokensRemaining());
+                                    return ServerResponse.status(HttpStatus.TOO_MANY_REQUESTS)
+                                            .header("Retry-After", String.valueOf(retryAfter))
+                                            .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
+                                }
+                                String cacheKey = responseCache.buildKey(request.method().name(), request.path(), clientId.get());
+                                return forward(webClient, request, route, circuitBreakers, healthChecker, roundRobin, leastConn, responseCache, cacheKey);
+                            }))
+                    .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
+                            .bodyValue("No route matched: " + request.path()));
+        });
     }
 
     private String clientId(ServerRequest request) {
@@ -67,11 +90,14 @@ public class GatewayRoutes {
     private Mono<ServerResponse> forward(
             WebClient webClient, ServerRequest request, RouteDefinition route,
             RouteCircuitBreakers circuitBreakers, HealthChecker healthChecker,
-            RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn) {
+            RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn,
+            ResponseCache responseCache, String cacheKey) {
 
         List<String> healthyInstances = healthChecker.getHealthyInstances(route);
         String target = selectTarget(route, healthyInstances, roundRobin, leastConn);
         String targetUrl = target + request.path();
+
+        boolean isCacheable = request.method() == HttpMethod.GET;
 
         Mono<ServerResponse> call = webClient
                 .method(request.method())
@@ -79,10 +105,23 @@ public class GatewayRoutes {
                 .headers(headers -> headers.addAll(request.headers().asHttpHeaders()))
                 .body(request.bodyToMono(byte[].class), byte[].class)
                 .exchangeToMono(clientResponse ->
-                        ServerResponse
-                                .status(clientResponse.statusCode())
-                                .headers(headers -> headers.addAll(clientResponse.headers().asHttpHeaders()))
-                                .body(clientResponse.bodyToMono(byte[].class), byte[].class)
+                        clientResponse.bodyToMono(byte[].class)
+                                .defaultIfEmpty(new byte[0])
+                                .flatMap(bodyBytes -> {
+                                    int statusCode = clientResponse.statusCode().value();
+
+                                    // Store in cache only for successful GET responses
+                                    if (isCacheable && clientResponse.statusCode().is2xxSuccessful()) {
+                                        responseCache.put(cacheKey,
+                                                new ResponseCache.CachedResponse(statusCode, bodyBytes));
+                                    }
+
+                                    return ServerResponse
+                                            .status(clientResponse.statusCode())
+                                            .headers(headers -> headers.addAll(clientResponse.headers().asHttpHeaders()))
+                                            .header("X-Cache", "MISS")
+                                            .bodyValue(bodyBytes);
+                                })
                 );
 
         return call

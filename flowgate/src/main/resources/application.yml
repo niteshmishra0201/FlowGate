@@ -13,6 +13,8 @@ flowgate:
   routes:
     - id: order-service
       path-pattern: "/orders/**"
+      jwt:
+        secret: ""
       target-uris:
         - "http://order-service-1:5678"
         - "http://order-service-2:5678"
