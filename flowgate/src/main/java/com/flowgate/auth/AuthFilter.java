@@ -14,6 +14,8 @@ import java.util.Optional;
 @Component
 public class AuthFilter {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AuthFilter.class);
+
     private final SecretKey key;
 
     public AuthFilter(@Value("${flowgate.jwt.secret}") String secret) {
@@ -35,7 +37,7 @@ public class AuthFilter {
             // "sub" (subject) is the standard JWT claim for "who does this token belong to"
             return Optional.ofNullable(claims.getSubject());
         } catch (JwtException e) {
-            // Covers expired tokens, bad signatures, malformed tokens — all treated as "not valid"
+            log.warn("JWT validation failed: {}", e.getMessage());
             return Optional.empty();
         }
     }

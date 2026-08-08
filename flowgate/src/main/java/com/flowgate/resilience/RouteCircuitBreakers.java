@@ -14,11 +14,19 @@ public class RouteCircuitBreakers {
     private final RetryRegistry retryRegistry;
 
     public RouteCircuitBreakers(CircuitBreakerRegistry cbRegistry, RetryRegistry retryRegistry,
-                                RouteProperties routeProperties) {
+                                RouteProperties routeProperties, com.flowgate.observability.GatewayEventBus eventBus) {
         this.cbRegistry = cbRegistry;
         this.retryRegistry = retryRegistry;
+
+        org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RouteCircuitBreakers.class);
+
         routeProperties.routes().forEach(route -> {
-            cbRegistry.circuitBreaker(route.id());
+            io.github.resilience4j.circuitbreaker.CircuitBreaker cb = cbRegistry.circuitBreaker(route.id());
+            cb.getEventPublisher().onStateTransition(event -> {
+                String detail = event.getStateTransition().getFromState() + " -> " + event.getStateTransition().getToState();
+                log.warn("Circuit breaker for route={} transitioned {}", route.id(), detail);
+                eventBus.publish(com.flowgate.observability.GatewayEvent.circuitBreakerTransition(route.id(), detail));
+            });
             retryRegistry.retry(route.id());
         });
     }

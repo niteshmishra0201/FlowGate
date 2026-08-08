@@ -1,3 +1,12 @@
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus,health
+  endpoint:
+    health:
+      show-details: always
+
 server:
   port: 8080
 
@@ -10,11 +19,11 @@ spring:
       port: 6379
 
 flowgate:
+  jwt:
+    secret: "+j9hx2AKGvalskP13H+SOWSJT23CWgwr0NZyHsI519g="
   routes:
     - id: order-service
       path-pattern: "/orders/**"
-      jwt:
-        secret: ""
       target-uris:
         - "http://order-service-1:5678"
         - "http://order-service-2:5678"
