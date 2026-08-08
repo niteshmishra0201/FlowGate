@@ -37,7 +37,8 @@ public class GatewayRoutes {
             WebClient webClient, RouteMatcher routeMatcher, RateLimiter rateLimiter,
             RouteCircuitBreakers circuitBreakers, HealthChecker healthChecker,
             AuthFilter authFilter, RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn, ResponseCache responseCache, io.micrometer.core.instrument.MeterRegistry meterRegistry,
-            com.flowgate.observability.GatewayEventBus eventBus) {
+            com.flowgate.observability.GatewayEventBus eventBus,
+            com.flowgate.analyzer.AnomalyDetector anomalyDetector) {
 
         return RouterFunctions.route(all(), request -> {
             String authHeader = request.headers().firstHeader("Authorization");
@@ -75,7 +76,7 @@ public class GatewayRoutes {
                                             .bodyValue("Rate limit exceeded. Retry after " + retryAfter + "s.");
                                 }
                                 String cacheKey = responseCache.buildKey(request.method().name(), request.path(), clientId.get());
-                                return forward(webClient, request, route, circuitBreakers, healthChecker, roundRobin, leastConn, responseCache, cacheKey, meterRegistry, eventBus);
+                                return forward(webClient, request, route, circuitBreakers, healthChecker, roundRobin, leastConn, responseCache, cacheKey, meterRegistry, eventBus, anomalyDetector);
                             }))
                     .orElseGet(() -> ServerResponse.status(HttpStatus.NOT_FOUND)
                             .bodyValue("No route matched: " + request.path()));
@@ -100,11 +101,12 @@ public class GatewayRoutes {
             RouteCircuitBreakers circuitBreakers, HealthChecker healthChecker,
             RoundRobinStrategy roundRobin, LeastConnectionsStrategy leastConn,
             ResponseCache responseCache, String cacheKey, io.micrometer.core.instrument.MeterRegistry meterRegistry,
-            com.flowgate.observability.GatewayEventBus eventBus) {
+            com.flowgate.observability.GatewayEventBus eventBus, com.flowgate.analyzer.AnomalyDetector anomalyDetector) {
 
         List<String> healthyInstances = healthChecker.getHealthyInstances(route);
         String target = selectTarget(route, healthyInstances, roundRobin, leastConn);
         String targetUrl = target + request.path();
+        long startTime = System.currentTimeMillis();
 
         boolean isCacheable = request.method() == HttpMethod.GET;
 
@@ -130,6 +132,9 @@ public class GatewayRoutes {
                                             request.path(), route.id(), target, clientResponse.statusCode().value());
                                     eventBus.publish(com.flowgate.observability.GatewayEvent.requestCompleted(
                                             route.id(), clientResponse.statusCode().value(), false));
+
+                                    long latency = System.currentTimeMillis() - startTime;
+                                    anomalyDetector.checkForAnomaly(route.id(), latency);
 
                                     return ServerResponse
                                             .status(clientResponse.statusCode())

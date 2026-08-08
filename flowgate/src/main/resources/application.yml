@@ -20,7 +20,7 @@ spring:
 
 flowgate:
   jwt:
-    secret: "+j9hx2AKGvalskP13H+SOWSJT23CWgwr0NZyHsI519g="
+    secret: ".."
   routes:
     - id: order-service
       path-pattern: "/orders/**"
