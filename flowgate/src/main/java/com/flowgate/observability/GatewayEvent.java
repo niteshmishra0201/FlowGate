@@ -21,4 +21,8 @@ public record GatewayEvent(
     public static GatewayEvent circuitBreakerTransition(String routeId, String detail) {
         return new GatewayEvent("circuit_breaker_transition", routeId, null, null, detail, Instant.now());
     }
+
+    public static GatewayEvent anomalyDetected(String routeId, String detail) {
+        return new GatewayEvent("anomaly_detected", routeId, null, null, detail, Instant.now());
+    }
 }

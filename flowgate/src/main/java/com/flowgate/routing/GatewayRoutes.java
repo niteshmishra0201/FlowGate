@@ -96,6 +96,16 @@ public class GatewayRoutes {
                 : roundRobin.selectInstance(route.id(), healthyInstances); // default
     }
 
+    private String stripRoutePrefix(String path, String pathPattern) {
+        // Turn "/test-latency/**" into "/test-latency" (the static prefix before the wildcard)
+        String prefix = pathPattern.replace("/**", "").replace("/*", "");
+        if (!prefix.isEmpty() && path.startsWith(prefix)) {
+            String stripped = path.substring(prefix.length());
+            return stripped.isEmpty() ? "/" : stripped;
+        }
+        return path;
+    }
+
     private Mono<ServerResponse> forward(
             WebClient webClient, ServerRequest request, RouteDefinition route,
             RouteCircuitBreakers circuitBreakers, HealthChecker healthChecker,
@@ -105,7 +115,7 @@ public class GatewayRoutes {
 
         List<String> healthyInstances = healthChecker.getHealthyInstances(route);
         String target = selectTarget(route, healthyInstances, roundRobin, leastConn);
-        String targetUrl = target + request.path();
+        String targetUrl = target + stripRoutePrefix(request.path(), route.pathPattern());
         long startTime = System.currentTimeMillis();
 
         boolean isCacheable = request.method() == HttpMethod.GET;

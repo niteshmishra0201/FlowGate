@@ -12,14 +12,16 @@ public class AnomalyDetector {
 
     private final LatencyTracker latencyTracker;
     private final GatewayEventBus eventBus;
+    private final AnomalyNarrator narrator;
 
-    public AnomalyDetector(LatencyTracker latencyTracker, GatewayEventBus eventBus) {
+    public AnomalyDetector(LatencyTracker latencyTracker, GatewayEventBus eventBus, AnomalyNarrator narrator) {
         this.latencyTracker = latencyTracker;
         this.eventBus = eventBus;
+        this.narrator = narrator;
     }
 
     public void checkForAnomaly(String routeId, long latencyMs) {
-        // Record first, so this very request contributes to future baseline data too.
+
         latencyTracker.recordLatency(routeId, latencyMs);
 
         LatencyTracker.Stats stats = latencyTracker.computeStats(routeId);
@@ -31,11 +33,10 @@ public class AnomalyDetector {
                     "Latency %dms is %.1f standard deviations from route average (%.0fms)",
                     latencyMs, zScore, stats.mean());
             log.warn("Anomaly detected for route={}: {}", routeId, detail);
-            eventBus.publish(com.flowgate.observability.GatewayEvent.circuitBreakerTransition(
-                    // Reusing the existing event shape for now — repurposed as a generic "notable event" carrier.
-                    // We'll give this its own proper event type in the next microstep.
-                    routeId, "ANOMALY: " + detail
-            ));
+            narrator.narrate(routeId, detail)
+                    .subscribe(narratedText ->
+                            eventBus.publish(com.flowgate.observability.GatewayEvent.anomalyDetected(routeId, narratedText))
+                    );
         }
     }
 }
